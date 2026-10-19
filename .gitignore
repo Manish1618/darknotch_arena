@@ -1,0 +1,15 @@
+# secrets and local data never go in the repo
+.env
+*.db
+*.sqlite3
+uploads/
+# Python and test leftovers
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+# editor and OS clutter
+.DS_Store
+.idea/
+.vscode/

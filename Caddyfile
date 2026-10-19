@@ -1,0 +1,74 @@
+# Load balancer: TLS (Let's Encrypt), HTTP/3, routing, health and retries.
+#
+# Behind Cloudflare? Uncomment this block so Caddy takes each player's real IP
+# from CF-Connecting-IP, and only when the request really comes from one of
+# Cloudflare's addresses (current list: https://www.cloudflare.com/ips/).
+# Without it, every player looks like a few Cloudflare IPs and the per-IP
+# login limit would lock a whole event out at once.
+#{
+#	servers {
+#		trusted_proxies static 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+#		client_ip_headers CF-Connecting-IP
+#	}
+#}
+
+{$DOMAIN} {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+		-Via
+	}
+
+	# challenge file uploads may be large; everything else stays small
+	@upload path_regexp ^/api/events/[^/]+/manage/challenges/[0-9]+/files$
+	@other not path_regexp ^/api/events/[^/]+/manage/challenges/[0-9]+/files$
+	request_body @upload {
+		max_size 55MB
+	}
+	request_body @other {
+		max_size 1MB
+	}
+
+	# Backend group: every "api" container Docker's DNS knows about (scale with
+	# --scale api=N). Containers come and go within seconds. One that refuses
+	# connections or times out is taken out for 30 s and the request is retried
+	# on another (passive health checks: Caddy's active checks don't run on
+	# DNS-discovered upstreams). Docker marks a container whose /readyz check
+	# fails as unhealthy; a crashed one restarts and drops out of DNS meanwhile.
+	# App answers like 503 (mail briefly down) don't count: they aren't the
+	# container's fault, and every container would give the same answer.
+	handle /api/* {
+		reverse_proxy {
+			dynamic a {
+				name api
+				port 8000
+				refresh 5s
+			}
+			lb_policy least_conn
+			lb_try_duration 5s
+			lb_try_interval 250ms
+			fail_duration 30s
+			max_fails 3
+			unhealthy_status 502 504
+			# exactly one address: the client, or the real player behind Cloudflare
+			header_up X-Forwarded-For {client_ip}
+		}
+	}
+
+	# Frontend group: the static website.
+	handle {
+		reverse_proxy {
+			dynamic a {
+				name web
+				port 8080
+				refresh 5s
+			}
+			lb_policy round_robin
+			lb_try_duration 3s
+			fail_duration 30s
+			max_fails 3
+			unhealthy_status 502 504
+		}
+	}
+}

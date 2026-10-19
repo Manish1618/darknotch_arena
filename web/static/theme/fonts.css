@@ -1,0 +1,9 @@
+/* Self-hosted faces so the board looks right on an offline LAN event. */
+@font-face{font-family:"Orbitron";font-style:normal;font-weight:500;font-display:swap;src:url(/static/theme/fonts/orbitron-latin-500-normal.woff2) format("woff2")}
+@font-face{font-family:"Orbitron";font-style:normal;font-weight:700;font-display:swap;src:url(/static/theme/fonts/orbitron-latin-700-normal.woff2) format("woff2")}
+@font-face{font-family:"Orbitron";font-style:normal;font-weight:900;font-display:swap;src:url(/static/theme/fonts/orbitron-latin-900-normal.woff2) format("woff2")}
+@font-face{font-family:"Chakra Petch";font-style:normal;font-weight:500;font-display:swap;src:url(/static/theme/fonts/chakra-petch-latin-500-normal.woff2) format("woff2")}
+@font-face{font-family:"Chakra Petch";font-style:normal;font-weight:600;font-display:swap;src:url(/static/theme/fonts/chakra-petch-latin-600-normal.woff2) format("woff2")}
+@font-face{font-family:"Chakra Petch";font-style:normal;font-weight:700;font-display:swap;src:url(/static/theme/fonts/chakra-petch-latin-700-normal.woff2) format("woff2")}
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:400;font-display:swap;src:url(/static/theme/fonts/jetbrains-mono-latin-400-normal.woff2) format("woff2")}
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:700;font-display:swap;src:url(/static/theme/fonts/jetbrains-mono-latin-700-normal.woff2) format("woff2")}

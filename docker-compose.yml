@@ -1,0 +1,138 @@
+# Darkn0tch Arena: load balancer -> frontend group + backend group -> Redis + Postgres.
+#
+#   Players --HTTPS--> caddy (TLS, routing, health, retries)
+#                        |-- /api/*  --> api  x API_REPLICAS  (FastAPI, stateless)
+#                        '-- else    --> web  x WEB_REPLICAS  (nginx, static site)
+#   api --> redis (shared rate limits + scoreboard cache)    api --> db (Postgres)
+#   migrate: runs the database migrations once, before any api container starts
+#
+# Scale the backend for a bigger event without downtime for the others:
+#   docker compose up -d --scale api=8
+# Rule of thumb: one api container per CPU core, and
+#   API_REPLICAS x (DB_POOL_SIZE + DB_POOL_OVERFLOW) < 200 (Postgres max_connections below).
+
+x-app: &app
+  build: .
+  environment:
+    DATABASE_URL: postgresql+psycopg://ctf:${DB_PASSWORD:?set DB_PASSWORD in .env}@db:5432/ctf
+    REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}@redis:6379/0
+    FLAG_PEPPER: ${FLAG_PEPPER:?set FLAG_PEPPER in .env}
+    SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env}
+    ALLOWED_HOSTS: ${DOMAIN:?set DOMAIN in .env}
+    PUBLIC_URL: https://${DOMAIN}
+    ORGANISER_MFA: ${ORGANISER_MFA:-required}
+    UPLOAD_DIR: /data/uploads
+    SITE_NAME: ${SITE_NAME:-Darkn0tch Arena}
+    MAX_UPLOAD_MB: "50"
+    DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+    DB_POOL_OVERFLOW: ${DB_POOL_OVERFLOW:-10}
+    SMTP_HOST: ${SMTP_HOST:?set SMTP_HOST in .env (sign-up sends codes by email)}
+    SMTP_PORT: ${SMTP_PORT:-587}
+    SMTP_USER: ${SMTP_USER:-}
+    SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+    SMTP_FROM: ${SMTP_FROM:-}
+    SMTP_SECURITY: ${SMTP_SECURITY:-starttls}
+    GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+    GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+  read_only: true
+  tmpfs: [/tmp]                        # multipart uploads spool here
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    networks: [public, to_web, to_api]
+    depends_on: [web, api]
+    restart: unless-stopped
+
+  web:
+    build: { context: ., dockerfile: deploy/web.Dockerfile }
+    deploy: { replicas: "${WEB_REPLICAS:-2}" }
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks: [to_web]                 # reachable from Caddy only; no route to API or data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  api:
+    <<: *app
+    deploy:
+      replicas: "${API_REPLICAS:-4}"
+      resources: { limits: { memory: 1g } }
+    volumes: [uploads:/data/uploads]   # challenge files, shared by every api container
+    networks: [to_api, data]           # to_api also gives the egress for SMTP and sign-in providers
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    restart: unless-stopped
+
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    networks: [data]
+    depends_on:
+      db: { condition: service_healthy }
+    restart: "no"
+
+  redis:
+    image: redis:7.4-alpine
+    # cache and counters only: nothing worth persisting, so no disk writes
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--save", "", "--appendonly", "no",
+              "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru"]
+    # start as the image's redis user: its entrypoint can't switch users itself
+    # once every capability is dropped
+    user: "999:1000"
+    networks: [data]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    command: ["postgres", "-c", "max_connections=200", "-c", "shared_buffers=1GB"]
+    environment:
+      POSTGRES_USER: ctf
+      POSTGRES_DB: ctf
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    networks: [data]
+    shm_size: 256mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ctf -d ctf"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+networks:
+  public: {}                    # Caddy's published ports and Let's Encrypt
+  to_web: { internal: true }    # Caddy <-> frontend containers
+  to_api: {}                    # Caddy <-> backend containers (+ their outbound mail/sign-in calls)
+  data: { internal: true }      # backend <-> Redis/Postgres; no route to the internet
+
+volumes:
+  uploads:
+  pgdata:
+  caddy_data:
