@@ -27,7 +27,8 @@ what an attacker might try and what stops it.
 | Flooding inboxes through the site | Reset codes: one a minute and five an hour per address, and a cap per IP per hour. |
 | Hijacking a password reset | The 6-digit code goes only to the account's inbox, is stored as a keyed hash, works once for 10 minutes and dies after 5 wrong guesses. Using it ends every session, and an account with 2FA still needs its code to log in. |
 | Forged or replayed "Sign in with Google" | Authorization code flow with PKCE; state and nonce are random, single-use, expire in 10 minutes and are kept server-side; the state is bound to the starting browser by a cookie (no login CSRF). The ID token's signature, issuer, audience, expiry and nonce are checked against Google's published keys. Only verified emails count. The redirect after sign-in can only stay on this site. |
-| Taking over an account through Google | A Google account links to an existing account only through an email Google has verified, the owner gets an email about it, and an account with 2FA still asks for its code after the Google sign-in. |
+| Signing up with someone else's email first (pre-hijacking) | When Google proves an address whose account never proved it (no emailed code or reset), the password, 2FA, recovery codes and sessions set by whoever signed up are removed before the owner gets in. |
+| Taking over an account through Google | A Google account links to an existing account only through an email Google has verified, the owner gets an email about it, and an account that had proven its email keeps its 2FA, which is still asked for after the Google sign-in. |
 | Unnoticed sign-ins | The first sign-in from a new IP in 90 days and a newly linked Google account each send a "was this you?" email. |
 
 ## Site admins and organisers

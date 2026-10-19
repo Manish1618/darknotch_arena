@@ -18,7 +18,7 @@ from ..audit import audit, client_ip
 from ..config import settings
 from ..db import get_db
 from ..mailer import quietly, security_mail
-from ..models import AuthFlow, Identity, User, aware, utcnow
+from ..models import AuditLog, AuthFlow, AuthSession, Identity, RecoveryCode, User, aware, utcnow
 from ..schemas import TicketIn
 from ..security import limiter, new_token, safe_eq, sha256
 from ..site import email_problem, get_site
@@ -133,8 +133,16 @@ def _account_for(db: Session, request: Request, background: BackgroundTasks, pro
     else:
         u = db.query(User).filter_by(email=who["email"]).first()
         if u:
+            detail = name
+            if not _email_proven(db, u):
+                # Sign-up doesn't prove the address, so whoever typed it may not
+                # own it. Google just proved who does: drop the password, 2FA and
+                # sessions the earlier sign-up set, so a squatter can't share the
+                # owner's account.
+                _drop_unproven_credentials(db, u)
+                detail = f"{name}; it proved the email, so the password and 2FA set before were removed"
             db.add(Identity(user_id=u.id, provider=provider, subject=who["sub"], email=who["email"]))
-            audit(db, "identity_linked", u.id, detail=name, request=request)
+            audit(db, "identity_linked", u.id, detail=detail, request=request)
             when = utcnow().strftime("%d %b %Y, %H:%M UTC")
             background.add_task(quietly, security_mail, u.email, f"{name} sign-in linked", when, client_ip(request),
                                 request.headers.get("user-agent", "")[:120])
@@ -156,6 +164,22 @@ def _account_for(db: Session, request: Request, background: BackgroundTasks, pro
         return None, "This account is disabled. Contact the site admin."
     db.commit()
     return u, None
+
+
+def _email_proven(db: Session, u: User) -> bool:
+    """Has this account's owner ever proven they read its inbox? Yes after an
+    emailed sign-up code (older accounts) or a password reset by emailed code."""
+    return db.query(AuditLog.id).filter(
+        AuditLog.user_id == u.id,
+        ((AuditLog.action == "register") & (AuditLog.detail == "email verified")) | (AuditLog.action == "password_reset"),
+    ).first() is not None
+
+
+def _drop_unproven_credentials(db: Session, u: User) -> None:
+    u.pw_hash = "!"  # matches no password; the owner can set one with "Forgot password"
+    u.totp_enabled, u.totp_secret, u.totp_last_step = False, None, 0
+    db.query(RecoveryCode).filter_by(user_id=u.id).delete()
+    db.query(AuthSession).filter_by(user_id=u.id).delete()
 
 
 def _free_username(db: Session, who: dict) -> str:

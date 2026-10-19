@@ -12,7 +12,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from app import boardcache, oidc, shared
 from app.config import settings
 from app.security import Limiter
-from conftest import PW, Client
+from conftest import PW, Client, last_code
 from test_challenges import EV, attempt, make, player
 
 
@@ -57,6 +57,13 @@ def test_google_sign_in_creates_a_verified_account_once(google):
 def test_google_links_an_existing_account_but_still_asks_for_2fa(google):
     c = Client()
     c.register("gina", "gina@college.edu")
+    # the owner has proven the inbox once (a reset by emailed code)
+    Client().c.post("/api/auth/password/forgot", json={"email": "gina@college.edu"})
+    assert Client().c.post("/api/auth/password/reset", json={"email": "gina@college.edu", "code": last_code("gina@college.edu"),
+                                                            "password": PW + "-new"}).status_code == 200
+    c, r = Client(), Client().c.post("/api/auth/login", json={"email": "gina@college.edu", "password": PW + "-new"})
+    c.c.cookies = r.cookies
+    c.csrf = r.json()["csrf"]
     secret = c.post("/api/auth/2fa/setup").json()["secret"]
     c.post("/api/auth/2fa/enable", {"code": pyotp.TOTP(secret).now()})
     b = Client()
@@ -67,6 +74,21 @@ def test_google_links_an_existing_account_but_still_asks_for_2fa(google):
     assert b.c.post("/api/auth/oauth/finish", json={"ticket": ticket, "totp": "000000"}).status_code == 401
     ok = b.c.post("/api/auth/oauth/finish", json={"ticket": ticket, "totp": pyotp.TOTP(secret).at(time.time() + 30)})
     assert ok.status_code == 200 and ok.json()["next"] == "/e/fall-ctf"
+
+
+def test_squatter_who_signed_up_with_someone_elses_email_is_locked_out(google):
+    squatter = Client()
+    squatter.register("squat", "gina@college.edu")
+    secret = squatter.post("/api/auth/2fa/setup").json()["secret"]
+    squatter.post("/api/auth/2fa/enable", {"code": pyotp.TOTP(secret).now()})
+    owner = Client()
+    _, r = round_trip(owner)
+    assert r.status_code == 303 and r.headers["location"] == "/e/fall-ctf"   # no squatter's 2FA in the way
+    assert owner.get("/api/auth/me").json()["user"]["totp_enabled"] is False
+    assert squatter.get("/api/auth/me").status_code == 401                  # squatter's session ended
+    for totp in (None, pyotp.TOTP(secret).at(time.time() + 30)):
+        body = {"email": "gina@college.edu", "password": PW, **({"totp": totp} if totp else {})}
+        assert Client().c.post("/api/auth/login", json=body).status_code == 401  # their password is gone
 
 
 def test_google_sign_up_follows_the_site_rules_and_stays_on_site(google):
